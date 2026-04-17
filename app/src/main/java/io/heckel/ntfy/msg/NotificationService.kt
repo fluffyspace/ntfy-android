@@ -46,6 +46,9 @@ class NotificationService(val context: Context) {
         if (notification.notificationId != 0) {
             Log.d(TAG, "Cancelling notification ${notification.id}: ${decodeMessage(notification)}")
             notificationManager.cancel(notification.notificationId)
+
+            // Update or remove summary notification after cancelling individual notification
+            updateTopicSummaryAfterCancel(notification.subscriptionId)
         }
     }
 
@@ -53,6 +56,8 @@ class NotificationService(val context: Context) {
         if (notificationId != 0) {
             Log.d(TAG, "Cancelling notification $notificationId")
             notificationManager.cancel(notificationId)
+            // Note: For this method we don't have subscription info,
+            // so we can't easily update the summary. This is used for cleanup scenarios.
         }
     }
 
@@ -87,6 +92,10 @@ class NotificationService(val context: Context) {
         val channelId = toChannelId(groupId, notification.priority)
         val insistent = notification.priority == PRIORITY_MAX &&
                 (repository.getInsistentMaxPriorityEnabled() || subscription.insistent == Repository.INSISTENT_MAX_PRIORITY_ENABLED)
+
+        // Create notification group key for topic-based grouping
+        val notificationGroupKey = "ntfy_topic_${subscription.id}"
+
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(Colors.notificationIcon(context))
@@ -95,6 +104,8 @@ class NotificationService(val context: Context) {
             .setShowWhen(true)
             .setOnlyAlertOnce(true) // Do not vibrate or play sound if already showing (updates!)
             .setAutoCancel(true) // Cancel when notification is clicked
+            .setGroup(notificationGroupKey) // Group notifications by topic
+
         setStyleAndText(builder, subscription, notification) // Preview picture or big text style
         setClickAction(builder, subscription, notification)
         maybeSetDeleteIntent(builder, insistent)
@@ -111,6 +122,105 @@ class NotificationService(val context: Context) {
         maybePlayInsistentSound(groupId, insistent)
 
         notificationManager.notify(notification.notificationId, builder.build())
+
+        // Create or update the summary notification for this topic
+        displayTopicSummaryNotification(subscription, notificationGroupKey, channelId)
+    }
+
+    private fun displayTopicSummaryNotification(subscription: Subscription, groupKey: String, channelId: String) {
+        // Get all active notifications for this subscription/topic
+        val activeNotifications = notificationManager.activeNotifications.filter {
+            it.notification.group == groupKey && !it.notification.extras.getBoolean("android.isGroupSummary", false)
+        }
+
+        // Only create summary if there are multiple notifications for this topic
+        if (activeNotifications.size <= 1) {
+            return
+        }
+
+        val topicDisplayName = subscriptionGroupName(subscription)
+        val summaryId = generateSummaryNotificationId(subscription.id)
+
+        val inboxStyle = NotificationCompat.InboxStyle()
+            .setBigContentTitle(topicDisplayName)
+            .setSummaryText("${activeNotifications.size} new messages")
+
+        // Add lines from active notifications (most recent first)
+        val sortedNotifications = activeNotifications.sortedByDescending { it.notification.`when` }
+        sortedNotifications.take(5).forEach { statusBarNotification ->
+            val notification = statusBarNotification.notification
+            val title = notification.extras.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString() ?: ""
+            val text = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString() ?: ""
+            val time = formatDateShort(notification.`when` / 1000) // Convert millis to seconds
+
+            val line = if (title.isNotEmpty() && title != topicDisplayName) {
+                "$title • $time"
+            } else if (text.isNotEmpty()) {
+                "$text • $time"
+            } else {
+                "New message • $time"
+            }
+            inboxStyle.addLine(line)
+        }
+
+        val summaryBuilder = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(Colors.notificationIcon(context))
+            .setContentTitle(topicDisplayName)
+            .setContentText("${activeNotifications.size} new messages")
+            .setStyle(inboxStyle)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+
+        // Set click action to open the topic detail view
+        summaryBuilder.setContentIntent(detailActivityIntent(subscription))
+
+        notificationManager.notify(summaryId, summaryBuilder.build())
+    }
+
+    private fun generateSummaryNotificationId(subscriptionId: Long): Int {
+        // Generate a consistent summary notification ID for each subscription
+        // Use negative values to avoid conflicts with regular notification IDs
+        return -(subscriptionId.toInt() + 1000)
+    }
+
+    private fun updateTopicSummaryAfterCancel(subscriptionId: Long) {
+        try {
+            val subscription = repository.getSubscription(subscriptionId) ?: return
+            val notificationGroupKey = "ntfy_topic_${subscription.id}"
+
+            // Check how many notifications are still active for this topic
+            val activeNotifications = notificationManager.activeNotifications.filter {
+                it.notification.group == notificationGroupKey && !it.notification.extras.getBoolean("android.isGroupSummary", false)
+            }
+
+            val summaryId = generateSummaryNotificationId(subscriptionId)
+
+            when {
+                activeNotifications.isEmpty() -> {
+                    // No more notifications for this topic, remove the summary
+                    Log.d(TAG, "Removing summary notification for topic ${subscription.topic}")
+                    notificationManager.cancel(summaryId)
+                }
+                activeNotifications.size == 1 -> {
+                    // Only one notification left, remove the summary to show individual notification
+                    Log.d(TAG, "Only one notification left for topic ${subscription.topic}, removing summary")
+                    notificationManager.cancel(summaryId)
+                }
+                else -> {
+                    // Multiple notifications still exist, update the summary
+                    Log.d(TAG, "Updating summary notification for topic ${subscription.topic}")
+                    displayTopicSummaryNotification(subscription, notificationGroupKey, toChannelId(
+                        if (subscription.dedicatedChannels) subscriptionGroupId(subscription) else DEFAULT_GROUP,
+                        PRIORITY_DEFAULT // Use default priority for summary
+                    ))
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update summary after cancel", e)
+        }
     }
 
     private fun maybeSetDeleteIntent(builder: NotificationCompat.Builder, insistent: Boolean) {
