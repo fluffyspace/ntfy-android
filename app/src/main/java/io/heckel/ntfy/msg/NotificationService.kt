@@ -87,7 +87,8 @@ class NotificationService(val context: Context) {
     }
 
     private fun displayInternal(subscription: Subscription, notification: Notification, update: Boolean = false) {
-        val title = formatTitle(appBaseUrl, subscription, notification)
+        val originalTitle = formatTitle(appBaseUrl, subscription, notification)
+        val topicDisplayName = subscriptionGroupName(subscription)
         val groupId = if (subscription.dedicatedChannels) subscriptionGroupId(subscription) else DEFAULT_GROUP
         val channelId = toChannelId(groupId, notification.priority)
         val insistent = notification.priority == PRIORITY_MAX &&
@@ -96,10 +97,19 @@ class NotificationService(val context: Context) {
         // Create notification group key for topic-based grouping
         val notificationGroupKey = "ntfy_topic_${subscription.id}"
 
+        // Always show topic name prominently in title for grouped notifications
+        val titleWithTopic = if (notification.title.isNotEmpty() && notification.title != topicDisplayName) {
+            "$topicDisplayName: ${notification.title}"
+        } else if (notification.title.isEmpty()) {
+            topicDisplayName
+        } else {
+            notification.title
+        }
+
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(Colors.notificationIcon(context))
-            .setContentTitle(title)
+            .setContentTitle(titleWithTopic)
             .setWhen(notification.timestamp * 1000) // Set timestamp (convert seconds to millis)
             .setShowWhen(true)
             .setOnlyAlertOnce(true) // Do not vibrate or play sound if already showing (updates!)
@@ -133,17 +143,24 @@ class NotificationService(val context: Context) {
             it.notification.group == groupKey && !it.notification.extras.getBoolean("android.isGroupSummary", false)
         }
 
-        // Only create summary if there are multiple notifications for this topic
-        if (activeNotifications.size <= 1) {
+        // Always create summary for consistency, even with 1 notification
+        // Android will handle the display logic appropriately
+        if (activeNotifications.isEmpty()) {
             return
         }
 
         val topicDisplayName = subscriptionGroupName(subscription)
         val summaryId = generateSummaryNotificationId(subscription.id)
 
+        val summaryText = if (activeNotifications.size == 1) {
+            "1 notification"
+        } else {
+            "${activeNotifications.size} notifications"
+        }
+
         val inboxStyle = NotificationCompat.InboxStyle()
-            .setBigContentTitle(topicDisplayName)
-            .setSummaryText("${activeNotifications.size} new messages")
+            .setBigContentTitle("📱 $topicDisplayName")
+            .setSummaryText(summaryText)
 
         // Add lines from active notifications (most recent first)
         val sortedNotifications = activeNotifications.sortedByDescending { it.notification.`when` }
@@ -153,26 +170,34 @@ class NotificationService(val context: Context) {
             val text = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString() ?: ""
             val time = formatDateShort(notification.`when` / 1000) // Convert millis to seconds
 
-            val line = if (title.isNotEmpty() && title != topicDisplayName) {
-                "$title • $time"
-            } else if (text.isNotEmpty()) {
-                "$text • $time"
+            // Remove topic prefix from title if it exists for cleaner summary
+            val cleanTitle = if (title.startsWith("$topicDisplayName:")) {
+                title.removePrefix("$topicDisplayName:").trim()
             } else {
-                "New message • $time"
+                title
             }
-            inboxStyle.addLine(line)
+
+            val line = if (cleanTitle.isNotEmpty()) {
+                "$cleanTitle"
+            } else if (text.isNotEmpty()) {
+                text.take(50) + if (text.length > 50) "..." else ""
+            } else {
+                "New message"
+            }
+            inboxStyle.addLine("• $line")
         }
 
         val summaryBuilder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(Colors.notificationIcon(context))
-            .setContentTitle(topicDisplayName)
-            .setContentText("${activeNotifications.size} new messages")
+            .setContentTitle("📱 $topicDisplayName")
+            .setContentText(summaryText)
             .setStyle(inboxStyle)
             .setGroup(groupKey)
             .setGroupSummary(true)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
+            .setNumber(activeNotifications.size)
 
         // Set click action to open the topic detail view
         summaryBuilder.setContentIntent(detailActivityIntent(subscription))
@@ -204,14 +229,9 @@ class NotificationService(val context: Context) {
                     Log.d(TAG, "Removing summary notification for topic ${subscription.topic}")
                     notificationManager.cancel(summaryId)
                 }
-                activeNotifications.size == 1 -> {
-                    // Only one notification left, remove the summary to show individual notification
-                    Log.d(TAG, "Only one notification left for topic ${subscription.topic}, removing summary")
-                    notificationManager.cancel(summaryId)
-                }
                 else -> {
-                    // Multiple notifications still exist, update the summary
-                    Log.d(TAG, "Updating summary notification for topic ${subscription.topic}")
+                    // Update the summary notification for any number of remaining notifications
+                    Log.d(TAG, "Updating summary notification for topic ${subscription.topic} (${activeNotifications.size} notifications)")
                     displayTopicSummaryNotification(subscription, notificationGroupKey, toChannelId(
                         if (subscription.dedicatedChannels) subscriptionGroupId(subscription) else DEFAULT_GROUP,
                         PRIORITY_DEFAULT // Use default priority for summary
