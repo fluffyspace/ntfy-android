@@ -35,7 +35,8 @@ class NotificationService(val context: Context) {
     }
 
     fun update(subscription: Subscription, notification: Notification) {
-        val active = notificationManager.activeNotifications.find { it.id == notification.notificationId } != null
+        val topicNotifId = topicNotificationId(subscription.id)
+        val active = notificationManager.activeNotifications.any { it.id == topicNotifId }
         if (active) {
             Log.d(TAG, "Updating notification $notification")
             displayInternal(subscription, notification, update = true)
@@ -43,22 +44,15 @@ class NotificationService(val context: Context) {
     }
 
     fun cancel(notification: Notification) {
-        if (notification.notificationId != 0) {
-            Log.d(TAG, "Cancelling notification ${notification.id}: ${decodeMessage(notification)}")
-            notificationManager.cancel(notification.notificationId)
-
-            // Update or remove summary notification after cancelling individual notification
-            updateTopicSummaryAfterCancel(notification.subscriptionId)
-        }
+        if (notification.notificationId == 0) return
+        Log.d(TAG, "Cancelling notification ${notification.id}: ${decodeMessage(notification)}")
+        cancelMessageFromTopic(notification.subscriptionId, notification.notificationId)
     }
 
-    fun cancel(notificationId: Int) {
-        if (notificationId != 0) {
-            Log.d(TAG, "Cancelling notification $notificationId")
-            notificationManager.cancel(notificationId)
-            // Note: For this method we don't have subscription info,
-            // so we can't easily update the summary. This is used for cleanup scenarios.
-        }
+    fun cancel(subscriptionId: Long, notificationId: Int) {
+        if (notificationId == 0) return
+        Log.d(TAG, "Cancelling notification $notificationId for subscription $subscriptionId")
+        cancelMessageFromTopic(subscriptionId, notificationId)
     }
 
     fun createDefaultNotificationChannels() {
@@ -87,160 +81,159 @@ class NotificationService(val context: Context) {
     }
 
     private fun displayInternal(subscription: Subscription, notification: Notification, update: Boolean = false) {
-        val originalTitle = formatTitle(appBaseUrl, subscription, notification)
-        val topicDisplayName = subscriptionGroupName(subscription)
         val groupId = if (subscription.dedicatedChannels) subscriptionGroupId(subscription) else DEFAULT_GROUP
         val channelId = toChannelId(groupId, notification.priority)
         val insistent = notification.priority == PRIORITY_MAX &&
                 (repository.getInsistentMaxPriorityEnabled() || subscription.insistent == Repository.INSISTENT_MAX_PRIORITY_ENABLED)
 
-        // Create notification group key for topic-based grouping
-        val notificationGroupKey = "ntfy_topic_${subscription.id}"
-
-        // Always show topic name prominently in title for grouped notifications
-        val titleWithTopic = if (notification.title.isNotEmpty() && notification.title != topicDisplayName) {
-            "$topicDisplayName: ${notification.title}"
-        } else if (notification.title.isEmpty()) {
-            topicDisplayName
-        } else {
-            notification.title
-        }
-
-        val builder = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setColor(Colors.notificationIcon(context))
-            .setContentTitle(titleWithTopic)
-            .setWhen(notification.timestamp * 1000) // Set timestamp (convert seconds to millis)
-            .setShowWhen(true)
-            .setOnlyAlertOnce(true) // Do not vibrate or play sound if already showing (updates!)
-            .setAutoCancel(true) // Cancel when notification is clicked
-            .setGroup(notificationGroupKey) // Group notifications by topic
-
-        setStyleAndText(builder, subscription, notification) // Preview picture or big text style
-        setClickAction(builder, subscription, notification)
-        maybeSetDeleteIntent(builder, insistent)
-        maybeSetSound(builder, insistent, update)
-        maybeSetProgress(builder, notification)
-        maybeAddOpenAction(builder, notification)
-        maybeAddBrowseAction(builder, notification)
-        maybeAddDownloadAction(builder, notification)
-        maybeAddCancelAction(builder, notification)
-        maybeAddUserActions(builder, notification)
-
         maybeCreateNotificationGroup(groupId, subscriptionGroupName(subscription))
         maybeCreateNotificationChannel(groupId, notification.priority)
         maybePlayInsistentSound(groupId, insistent)
 
-        notificationManager.notify(notification.notificationId, builder.build())
-
-        // Create or update the summary notification for this topic
-        displayTopicSummaryNotification(subscription, notificationGroupKey, channelId)
+        val builder = buildTopicConversation(subscription, channelId, notification, insistent, update)
+        notificationManager.notify(topicNotificationId(subscription.id), builder.build())
     }
 
-    private fun displayTopicSummaryNotification(subscription: Subscription, groupKey: String, channelId: String) {
-        // Get all active notifications for this subscription/topic
-        val activeNotifications = notificationManager.activeNotifications.filter {
-            it.notification.group == groupKey && !it.notification.extras.getBoolean("android.isGroupSummary", false)
-        }
-
-        // Always create summary for consistency, even with 1 notification
-        // Android will handle the display logic appropriately
-        if (activeNotifications.isEmpty()) {
-            return
-        }
-
+    /**
+     * Builds the single per-topic MessagingStyle notification, appending the new message to
+     * whatever messages are already in the active topic notification (WhatsApp-style conversation).
+     * Updates replace the message with the same notificationId; new messages are simply appended.
+     */
+    private fun buildTopicConversation(
+        subscription: Subscription,
+        channelId: String,
+        newMessage: Notification,
+        insistent: Boolean,
+        update: Boolean
+    ): NotificationCompat.Builder {
         val topicDisplayName = subscriptionGroupName(subscription)
-        val summaryId = generateSummaryNotificationId(subscription.id)
+        val topicNotifId = topicNotificationId(subscription.id)
+        val groupKey = topicGroupKey(subscription.id)
 
-        val summaryText = if (activeNotifications.size == 1) {
-            "1 notification"
-        } else {
-            "${activeNotifications.size} notifications"
+        val senderName = if (newMessage.title.isNotEmpty()) formatTitle(newMessage) else topicDisplayName
+        val subscriptionIcon = subscription.icon?.readBitmapFromUriOrNull(context)
+        val messageIcon = newMessage.icon?.contentUri?.readBitmapFromUriOrNull(context)
+        val senderAvatar = messageIcon ?: subscriptionIcon
+        val senderBuilder = androidx.core.app.Person.Builder()
+            .setName(senderName)
+            .setKey("ntfy_sender_${subscription.id}_$senderName")
+        if (senderAvatar != null) {
+            senderBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(senderAvatar))
+        }
+        val sender = senderBuilder.build()
+
+        val user = androidx.core.app.Person.Builder()
+            .setName(topicDisplayName)
+            .setKey("ntfy_user_${subscription.id}")
+            .build()
+
+        val messageText = maybeAppendActionErrors(formatMessageMaybeWithAttachmentInfos(newMessage), newMessage)
+        val chatMessage = NotificationCompat.MessagingStyle.Message(messageText, newMessage.timestamp * 1000, sender)
+        chatMessage.extras.putInt(MSG_EXTRA_NOTIFICATION_ID, newMessage.notificationId)
+
+        val contentUri = newMessage.attachment?.contentUri
+        val mime = newMessage.attachment?.type
+        if (contentUri != null && supportedImage(mime)) {
+            try {
+                chatMessage.setData(mime!!, contentUri.toUri())
+            } catch (_: Exception) {
+                // Fall back to text-only message
+            }
         }
 
-        val inboxStyle = NotificationCompat.InboxStyle()
-            .setBigContentTitle("📱 $topicDisplayName")
-            .setSummaryText(summaryText)
-
-        // Add lines from active notifications (most recent first)
-        val sortedNotifications = activeNotifications.sortedByDescending { it.notification.`when` }
-        sortedNotifications.take(5).forEach { statusBarNotification ->
-            val notification = statusBarNotification.notification
-            val title = notification.extras.getCharSequence(NotificationCompat.EXTRA_TITLE)?.toString() ?: ""
-            val text = notification.extras.getCharSequence(NotificationCompat.EXTRA_TEXT)?.toString() ?: ""
-            val time = formatDateShort(notification.`when` / 1000) // Convert millis to seconds
-
-            // Remove topic prefix from title if it exists for cleaner summary
-            val cleanTitle = if (title.startsWith("$topicDisplayName:")) {
-                title.removePrefix("$topicDisplayName:").trim()
-            } else {
-                title
+        val existing = notificationManager.activeNotifications
+            .find { it.id == topicNotifId }
+            ?.notification
+            ?.let { NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(it) }
+        val merged = mutableListOf<NotificationCompat.MessagingStyle.Message>()
+        existing?.messages?.forEach { prev ->
+            if (prev.extras.getInt(MSG_EXTRA_NOTIFICATION_ID, -1) != newMessage.notificationId) {
+                merged.add(prev)
             }
-
-            val line = if (cleanTitle.isNotEmpty()) {
-                "$cleanTitle"
-            } else if (text.isNotEmpty()) {
-                text.take(50) + if (text.length > 50) "..." else ""
-            } else {
-                "New message"
-            }
-            inboxStyle.addLine("• $line")
         }
+        merged.add(chatMessage)
+        merged.sortBy { it.timestamp }
+        val kept = if (merged.size > MAX_CONVERSATION_MESSAGES) {
+            merged.subList(merged.size - MAX_CONVERSATION_MESSAGES, merged.size)
+        } else merged
 
-        val summaryBuilder = NotificationCompat.Builder(context, channelId)
+        val style = NotificationCompat.MessagingStyle(user)
+            .setConversationTitle(topicDisplayName)
+            .setGroupConversation(true)
+        kept.forEach { style.addMessage(it) }
+
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(Colors.notificationIcon(context))
-            .setContentTitle("📱 $topicDisplayName")
-            .setContentText(summaryText)
-            .setStyle(inboxStyle)
-            .setGroup(groupKey)
-            .setGroupSummary(true)
+            .setStyle(style)
+            .setWhen(newMessage.timestamp * 1000)
+            .setShowWhen(true)
+            .setOnlyAlertOnce(update)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .setNumber(activeNotifications.size)
+            .setGroup(groupKey)
 
-        // Set click action to open the topic detail view
-        summaryBuilder.setContentIntent(detailActivityIntent(subscription))
+        setClickAction(builder, subscription, newMessage)
+        maybeSetDeleteIntent(builder, insistent)
+        maybeSetSound(builder, insistent, update)
+        maybeSetProgress(builder, newMessage)
+        maybeAddOpenAction(builder, newMessage)
+        maybeAddBrowseAction(builder, newMessage)
+        maybeAddDownloadAction(builder, newMessage)
+        maybeAddCancelAction(builder, newMessage)
+        maybeAddUserActions(builder, newMessage)
 
-        notificationManager.notify(summaryId, summaryBuilder.build())
+        return builder
     }
 
-    private fun generateSummaryNotificationId(subscriptionId: Long): Int {
-        // Generate a consistent summary notification ID for each subscription
-        // Use negative values to avoid conflicts with regular notification IDs
+    private fun cancelMessageFromTopic(subscriptionId: Long, notificationId: Int) {
+        val topicNotifId = topicNotificationId(subscriptionId)
+        val activeSbn = notificationManager.activeNotifications.find { it.id == topicNotifId } ?: return
+        val existing = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(activeSbn.notification)
+        if (existing == null) {
+            notificationManager.cancel(topicNotifId)
+            return
+        }
+        val remaining = existing.messages.filter {
+            it.extras.getInt(MSG_EXTRA_NOTIFICATION_ID, -1) != notificationId
+        }
+        if (remaining.size == existing.messages.size) return // not found
+        if (remaining.isEmpty()) {
+            notificationManager.cancel(topicNotifId)
+            return
+        }
+        val subscription = repository.getSubscription(subscriptionId) ?: run {
+            notificationManager.cancel(topicNotifId)
+            return
+        }
+        val topicDisplayName = subscriptionGroupName(subscription)
+        val user = androidx.core.app.Person.Builder()
+            .setName(topicDisplayName)
+            .setKey("ntfy_user_${subscription.id}")
+            .build()
+        val style = NotificationCompat.MessagingStyle(user)
+            .setConversationTitle(topicDisplayName)
+            .setGroupConversation(true)
+        remaining.forEach { style.addMessage(it) }
+
+        val builder = NotificationCompat.Builder(context, activeSbn.notification.channelId)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(Colors.notificationIcon(context))
+            .setStyle(style)
+            .setWhen(remaining.last().timestamp)
+            .setShowWhen(true)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+            .setGroup(topicGroupKey(subscriptionId))
+            .setContentIntent(detailActivityIntent(subscription))
+        notificationManager.notify(topicNotifId, builder.build())
+    }
+
+    private fun topicNotificationId(subscriptionId: Long): Int {
         return -(subscriptionId.toInt() + 1000)
     }
 
-    private fun updateTopicSummaryAfterCancel(subscriptionId: Long) {
-        try {
-            val subscription = repository.getSubscription(subscriptionId) ?: return
-            val notificationGroupKey = "ntfy_topic_${subscription.id}"
-
-            // Check how many notifications are still active for this topic
-            val activeNotifications = notificationManager.activeNotifications.filter {
-                it.notification.group == notificationGroupKey && !it.notification.extras.getBoolean("android.isGroupSummary", false)
-            }
-
-            val summaryId = generateSummaryNotificationId(subscriptionId)
-
-            when {
-                activeNotifications.isEmpty() -> {
-                    // No more notifications for this topic, remove the summary
-                    Log.d(TAG, "Removing summary notification for topic ${subscription.topic}")
-                    notificationManager.cancel(summaryId)
-                }
-                else -> {
-                    // Update the summary notification for any number of remaining notifications
-                    Log.d(TAG, "Updating summary notification for topic ${subscription.topic} (${activeNotifications.size} notifications)")
-                    displayTopicSummaryNotification(subscription, notificationGroupKey, toChannelId(
-                        if (subscription.dedicatedChannels) subscriptionGroupId(subscription) else DEFAULT_GROUP,
-                        PRIORITY_DEFAULT // Use default priority for summary
-                    ))
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to update summary after cancel", e)
-        }
+    private fun topicGroupKey(subscriptionId: Long): String {
+        return "ntfy_topic_$subscriptionId"
     }
 
     private fun maybeSetDeleteIntent(builder: NotificationCompat.Builder, insistent: Boolean) {
@@ -260,36 +253,6 @@ class NotificationService(val context: Context) {
             builder.setSound(defaultSoundUri)
         } else {
             builder.setSound(null)
-        }
-    }
-
-    private fun setStyleAndText(builder: NotificationCompat.Builder, subscription: Subscription, notification: Notification) {
-        val contentUri = notification.attachment?.contentUri
-        val isSupportedImage = supportedImage(notification.attachment?.type)
-        val subscriptionIcon = subscription.icon?.readBitmapFromUriOrNull(context)
-        val notificationIcon = notification.icon?.contentUri?.readBitmapFromUriOrNull(context)
-        val largeIcon = notificationIcon ?: subscriptionIcon
-        if (contentUri != null && isSupportedImage) {
-            try {
-                val attachmentBitmap = contentUri.readBitmapFromUri(context)
-                builder
-                    .setContentText(maybeAppendActionErrors(maybeMarkdown(formatMessage(notification), notification), notification))
-                    .setLargeIcon(attachmentBitmap)
-                    .setStyle(NotificationCompat.BigPictureStyle()
-                        .bigPicture(attachmentBitmap)
-                        .bigLargeIcon(largeIcon)) // May be null
-            } catch (_: Exception) {
-                val message = maybeAppendActionErrors(formatMessageMaybeWithAttachmentInfos(notification), notification)
-                builder
-                    .setContentText(message)
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-            }
-        } else {
-            val message = maybeAppendActionErrors(formatMessageMaybeWithAttachmentInfos(notification), notification)
-            builder
-                .setContentText(message)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-                .setLargeIcon(largeIcon) // May be null
         }
     }
 
@@ -625,7 +588,7 @@ class NotificationService(val context: Context) {
 
             // Cancel notification
             val notifier = NotificationService(this)
-            notifier.cancel(notificationId)
+            notifier.cancel(subscriptionId, notificationId)
 
             // Mark notification as read; We can't use lifecycleScope here, because we
             // call finish() right after, so we do this awkward ioScope thing.
@@ -672,6 +635,9 @@ class NotificationService(val context: Context) {
         private const val GROUP_SUFFIX_PRIORITY_DEFAULT = ""
         private const val GROUP_SUFFIX_PRIORITY_HIGH = "-high"
         private const val GROUP_SUFFIX_PRIORITY_MAX = "-max"
+
+        private const val MSG_EXTRA_NOTIFICATION_ID = "ntfy.notificationId"
+        private const val MAX_CONVERSATION_MESSAGES = 25
 
         private const val VIEW_ACTION_EXTRA_URL = "url"
         private const val VIEW_ACTION_EXTRA_NOTIFICATION_ID = "notificationId"
