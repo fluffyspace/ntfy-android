@@ -106,7 +106,7 @@ class NotificationService(val context: Context) {
         insistent: Boolean,
         update: Boolean
     ): NotificationCompat.Builder {
-        val topicDisplayName = subscriptionGroupName(subscription)
+        val topicDisplayName = subscription.displayName ?: subscription.topic
         val topicNotifId = topicNotificationId(subscription.id)
         val groupKey = topicGroupKey(subscription.id)
 
@@ -205,7 +205,7 @@ class NotificationService(val context: Context) {
             notificationManager.cancel(topicNotifId)
             return
         }
-        val topicDisplayName = subscriptionGroupName(subscription)
+        val topicDisplayName = subscription.displayName ?: subscription.topic
         val user = androidx.core.app.Person.Builder()
             .setName(topicDisplayName)
             .setKey("ntfy_user_${subscription.id}")
