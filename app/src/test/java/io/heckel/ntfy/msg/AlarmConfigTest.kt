@@ -27,11 +27,31 @@ class AlarmConfigTest {
 
     @Test
     fun parse_allOptions() {
-        val config = parseAlarmConfig("fullscreen,sound=Cesium,vibrate=0,timeout=120,snooze=15")!!
+        val config = parseAlarmConfig("fullscreen,sound=Cesium,vibrate=0,timeout=120,snooze=15,volume=80")!!
         assertEquals("Cesium", config.sound)
         assertFalse(config.vibrate)
         assertEquals(120, config.timeoutSeconds)
         assertEquals(15, config.snoozeMinutes)
+        assertEquals(80, config.volumePercent)
+    }
+
+    @Test
+    fun parse_volumeDefaultsToNull() {
+        assertNull(parseAlarmConfig("fullscreen")!!.volumePercent)
+    }
+
+    @Test
+    fun parse_volumeZeroIsValid() {
+        // Symmetric with sound=none: the publisher may deliberately ring silently.
+        assertEquals(0, parseAlarmConfig("fullscreen,volume=0")!!.volumePercent)
+    }
+
+    @Test
+    fun parse_volumeOutOfRangeOrMalformedIgnored() {
+        assertNull(parseAlarmConfig("fullscreen,volume=101")!!.volumePercent)
+        assertNull(parseAlarmConfig("fullscreen,volume=-1")!!.volumePercent)
+        assertNull(parseAlarmConfig("fullscreen,volume=loud")!!.volumePercent)
+        assertNull(parseAlarmConfig("fullscreen,volume=")!!.volumePercent)
     }
 
     @Test

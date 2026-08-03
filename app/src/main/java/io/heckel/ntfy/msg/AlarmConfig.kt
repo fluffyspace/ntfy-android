@@ -8,7 +8,7 @@ import io.heckel.ntfy.util.splitTags
 
 /**
  * Configuration for a full-screen alarm notification, entirely controlled by the publisher
- * via message tags, e.g. "fullscreen,sound=Cesium,vibrate=0,timeout=120,snooze=10".
+ * via message tags, e.g. "fullscreen,sound=Cesium,vibrate=0,timeout=120,snooze=10,volume=80".
  *
  * The "fullscreen" tag triggers the alarm; the key=value tags tune its behavior. This rides on
  * tags because the official ntfy server forwards them unmodified, unlike custom fields/headers.
@@ -17,7 +17,8 @@ data class AlarmConfig(
     val sound: String = ALARM_SOUND_DEFAULT, // "default", "none", or a ringtone title to match
     val vibrate: Boolean = true,
     val timeoutSeconds: Int? = null, // null = no explicit timeout (a safety cap still applies)
-    val snoozeMinutes: Int = ALARM_DEFAULT_SNOOZE_MINUTES
+    val snoozeMinutes: Int = ALARM_DEFAULT_SNOOZE_MINUTES,
+    val volumePercent: Int? = null // null = leave the device's alarm volume alone
 )
 
 const val ALARM_TRIGGER_TAG = "fullscreen"
@@ -30,6 +31,7 @@ private const val ALARM_TAG_PREFIX_SOUND = "sound="
 private const val ALARM_TAG_PREFIX_VIBRATE = "vibrate="
 private const val ALARM_TAG_PREFIX_TIMEOUT = "timeout="
 private const val ALARM_TAG_PREFIX_SNOOZE = "snooze="
+private const val ALARM_TAG_PREFIX_VOLUME = "volume="
 
 /**
  * Parses the alarm config from the raw comma-separated tags string. Returns null if the
@@ -64,6 +66,12 @@ fun parseAlarmConfig(tags: String?): AlarmConfig? {
                     config = config.copy(snoozeMinutes = minutes)
                 }
             }
+            tag.startsWith(ALARM_TAG_PREFIX_VOLUME) -> {
+                val percent = value.trim().toIntOrNull()
+                if (percent != null && percent in 0..100) {
+                    config = config.copy(volumePercent = percent)
+                }
+            }
         }
     }
     return config
@@ -78,6 +86,7 @@ fun isAlarmConfigTag(tag: String): Boolean {
             || tag.startsWith(ALARM_TAG_PREFIX_VIBRATE)
             || tag.startsWith(ALARM_TAG_PREFIX_TIMEOUT)
             || tag.startsWith(ALARM_TAG_PREFIX_SNOOZE)
+            || tag.startsWith(ALARM_TAG_PREFIX_VOLUME)
 }
 
 /**

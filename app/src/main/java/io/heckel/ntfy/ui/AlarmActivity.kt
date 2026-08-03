@@ -3,7 +3,9 @@ package io.heckel.ntfy.ui
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -11,6 +13,7 @@ import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
+import com.bumptech.glide.Glide
 import com.google.android.material.button.MaterialButton
 import io.heckel.ntfy.R
 import io.heckel.ntfy.app.Application
@@ -28,6 +31,7 @@ import io.heckel.ntfy.util.Log
 import io.heckel.ntfy.util.displayName
 import io.heckel.ntfy.util.formatDateShort
 import io.heckel.ntfy.util.formatMessage
+import io.heckel.ntfy.util.supportedImage
 import io.heckel.ntfy.util.formatTitle
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -124,6 +128,7 @@ class AlarmActivity : AppCompatActivity() {
         val title = formatTitle(notification)
         titleView.text = title.ifEmpty { getString(R.string.channel_alarm_name) }
         findViewById<TextView>(R.id.alarm_message_text).text = formatMessage(notification)
+        maybeShowAttachmentImage(notification)
 
         val container = findViewById<LinearLayout>(R.id.alarm_buttons_container)
         container.removeAllViews()
@@ -134,6 +139,35 @@ class AlarmActivity : AppCompatActivity() {
             }
         } else {
             actions.forEach { action -> addActionButton(container, notification, config, action) }
+        }
+    }
+
+    /**
+     * Shows the message's image attachment on the alarm screen, e.g. the camera snapshot on a
+     * doorbell alarm — the picture is usually the whole reason the alarm is worth looking at.
+     *
+     * Loaded straight from the attachment URL rather than waiting for contentUri: the download
+     * worker may not have finished (or may be disabled by the auto-download size limit) while the
+     * alarm is already ringing, and a snapshot that arrives after the ringing stops is useless.
+     * Glide prefers the downloaded copy when there is one. Non-image attachments are ignored;
+     * the existing message text already names them.
+     */
+    private fun maybeShowAttachmentImage(notification: Notification) {
+        val imageView = findViewById<ImageView>(R.id.alarm_attachment_image)
+        val attachment = notification.attachment
+        if (attachment == null || !supportedImage(attachment.type)) {
+            imageView.visibility = View.GONE
+            return
+        }
+        try {
+            Glide.with(this)
+                .load(attachment.contentUri ?: attachment.url)
+                .fitCenter()
+                .into(imageView)
+            imageView.visibility = View.VISIBLE
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to load alarm attachment image", e)
+            imageView.visibility = View.GONE
         }
     }
 

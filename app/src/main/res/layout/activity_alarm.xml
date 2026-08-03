@@ -2,6 +2,7 @@
 <androidx.constraintlayout.widget.ConstraintLayout
         xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:app="http://schemas.android.com/apk/res-auto"
+        xmlns:tools="http://schemas.android.com/tools"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="?android:attr/colorBackground"
@@ -68,6 +69,21 @@
                     android:textSize="18sp"
                     android:textColor="?android:attr/textColorPrimary"
                     android:gravity="center"/>
+
+            <!-- Image attachment (e.g. a camera snapshot on a doorbell alarm).
+                 GONE unless the message actually carries a previewable image;
+                 adjustViewBounds + maxHeight keep a tall picture from pushing
+                 the buttons off screen, which on a lockscreen would be fatal. -->
+            <ImageView
+                    android:id="@+id/alarm_attachment_image"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:adjustViewBounds="true"
+                    android:maxHeight="320dp"
+                    android:scaleType="fitCenter"
+                    android:visibility="gone"
+                    tools:ignore="ContentDescription"/>
         </LinearLayout>
     </ScrollView>
 

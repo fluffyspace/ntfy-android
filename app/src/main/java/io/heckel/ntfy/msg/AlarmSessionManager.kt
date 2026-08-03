@@ -33,6 +33,9 @@ class AlarmSessionManager private constructor(private val context: Context) {
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private var mediaPlayer: MediaPlayer? = null
+    // Device alarm volume before this session overrode it; restored on stop so a one-off
+    // "ring at 100%" cannot quietly become the phone's permanent alarm volume.
+    private var previousAlarmVolume: Int? = null
     private var activeAndroidNotificationId: Int = 0
     private var timeoutPendingIntent: PendingIntent? = null
 
@@ -72,6 +75,7 @@ class AlarmSessionManager private constructor(private val context: Context) {
             player.release()
         }
         mediaPlayer = null
+        restoreVolume()
         vibrator().cancel()
         timeoutPendingIntent?.let { alarmManager.cancel(it) }
         timeoutPendingIntent = null
@@ -109,6 +113,7 @@ class AlarmSessionManager private constructor(private val context: Context) {
 
     private fun maybePlaySound(config: AlarmConfig) {
         val soundUri = resolveAlarmSoundUri(context, config) ?: return
+        maybeForceVolume(config)
         if (audioManager.getStreamVolume(AudioManager.STREAM_ALARM) == 0) {
             Log.d(TAG, "Alarm volume is 0; not playing alarm sound")
             return
@@ -123,6 +128,42 @@ class AlarmSessionManager private constructor(private val context: Context) {
             mediaPlayer = player
         } catch (e: Exception) {
             Log.w(TAG, "Failed to play alarm sound $soundUri", e)
+        }
+    }
+
+    /**
+     * Applies the publisher's "volume=<0-100>" tag by setting the device's ALARM stream, so a
+     * critical alarm rings loudly even on a phone whose alarm volume was turned down. The stream
+     * volume is what actually decides loudness here: MediaPlayer.setVolume only attenuates
+     * *within* it, so it can never make a quiet phone loud.
+     *
+     * The old value is saved and restored in stop(). Note the publisher can therefore silence an
+     * alarm with volume=0 — that is deliberate and symmetric with sound=none.
+     */
+    private fun maybeForceVolume(config: AlarmConfig) {
+        val percent = config.volumePercent ?: return
+        try {
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+            val target = (max * percent / 100).coerceIn(0, max)
+            if (previousAlarmVolume == null) {
+                previousAlarmVolume = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+            }
+            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, target, 0)
+            Log.d(TAG, "Forced alarm volume to $percent% ($target/$max), was $previousAlarmVolume")
+        } catch (e: Exception) {
+            // A locked-down device (DND policy, restricted profile) can refuse this; ringing at
+            // whatever volume the phone already had beats not ringing at all.
+            Log.w(TAG, "Unable to force alarm volume", e)
+        }
+    }
+
+    private fun restoreVolume() {
+        val previous = previousAlarmVolume ?: return
+        previousAlarmVolume = null
+        try {
+            audioManager.setStreamVolume(AudioManager.STREAM_ALARM, previous, 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to restore alarm volume", e)
         }
     }
 
