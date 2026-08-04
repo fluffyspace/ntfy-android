@@ -58,7 +58,7 @@ class AlarmActivity : AppCompatActivity() {
         setContentView(R.layout.activity_alarm)
         setupShowOverLockscreen()
         onBackPressedDispatcher.addCallback(this) {
-            // Back = silence and close; the message stays in the topic conversation notification
+            // Back = silence and close; the message stays in the notification shade
             stopAndFinish()
         }
         handleIntent(intent)
@@ -212,7 +212,7 @@ class AlarmActivity : AppCompatActivity() {
     private fun dismiss(notification: Notification, clear: Boolean) {
         sessionManager.stop(cancelNotification = true)
         if (clear) {
-            clearConversationMessage(notification)
+            clearMessage(notification)
         }
         finish()
     }
@@ -237,13 +237,13 @@ class AlarmActivity : AppCompatActivity() {
             }
         }
         if (action.clear == true) {
-            clearConversationMessage(notification)
+            clearMessage(notification)
         }
         finish()
     }
 
-    private fun clearConversationMessage(notification: Notification) {
-        NotificationService(this).cancel(notification.subscriptionId, notification.notificationId)
+    private fun clearMessage(notification: Notification) {
+        NotificationService(this).cancel(notification.notificationId)
         val app = applicationContext as Application
         app.ioScope.launch {
             Repository.getInstance(app).markAsReadBySequenceId(notification.subscriptionId, notification.sequenceId)

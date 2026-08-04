@@ -124,7 +124,7 @@ class NotificationService(val context: Context) {
 
     /**
      * Posts the dedicated full-screen alarm notification (in addition to the regular topic
-     * conversation above) and starts the alarm session (looping sound, vibration, ring timeout).
+     * notification above) and starts the alarm session (looping sound, vibration, ring timeout).
      *
      * Sound/vibration are played by the app itself via AlarmSessionManager, because the alarm
      * channel is silent and Android may only show a heads-up (instead of launching AlarmActivity)
@@ -726,9 +726,9 @@ class NotificationService(val context: Context) {
                     .show()
             }
 
-            // Clear the message from the topic conversation and mark it read (clear=true semantics)
+            // Clear the message notification and mark it read (clear=true semantics)
             if (clear && subscriptionId != 0L) {
-                NotificationService(this).cancel(subscriptionId, notificationId)
+                NotificationService(this).cancel(notificationId)
                 if (sequenceId.isNotEmpty()) {
                     val app = applicationContext as io.heckel.ntfy.app.Application
                     app.ioScope.launch {

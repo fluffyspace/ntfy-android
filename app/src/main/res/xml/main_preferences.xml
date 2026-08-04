@@ -32,7 +32,7 @@
         <SwitchPreferenceCompat
                 app:key="@string/settings_notifications_fullscreen_alarms_key"
                 app:title="@string/settings_notifications_fullscreen_alarms_title"
-                app:defaultValue="true"/>
+                app:defaultValue="false"/>
         <Preference
                 app:key="@string/settings_notifications_fullscreen_permission_key"
                 app:title="@string/settings_notifications_fullscreen_permission_title"

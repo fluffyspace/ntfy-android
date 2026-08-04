@@ -32,7 +32,7 @@ class AlarmBroadcastReceiver : BroadcastReceiver() {
                 sessionManager.stop(cancelNotification = true)
                 cancelAlarmNotification(context, intent)
                 if (intent.getBooleanExtra(EXTRA_CLEAR, false)) {
-                    clearConversationMessage(context, intent)
+                    clearMessage(context, intent)
                 }
             }
             ACTION_ALARM_SNOOZE -> {
@@ -70,15 +70,15 @@ class AlarmBroadcastReceiver : BroadcastReceiver() {
     }
 
     /**
-     * Removes the message from the per-topic conversation notification and marks it as read
-     * (the "clear=true" semantics of ntfy actions).
+     * Removes the message's notification and marks it as read (the "clear=true" semantics of
+     * ntfy actions).
      */
-    private fun clearConversationMessage(context: Context, intent: Intent) {
+    private fun clearMessage(context: Context, intent: Intent) {
         val subscriptionId = intent.getLongExtra(EXTRA_SUBSCRIPTION_ID, 0)
         val androidNotificationId = intent.getIntExtra(EXTRA_ANDROID_NOTIFICATION_ID, 0)
         val sequenceId = intent.getStringExtra(EXTRA_SEQUENCE_ID) ?: ""
         if (subscriptionId == 0L) return
-        NotificationService(context).cancel(subscriptionId, androidNotificationId)
+        NotificationService(context).cancel(androidNotificationId)
         val app = context.applicationContext as? Application ?: return
         val pendingResult = goAsync()
         app.ioScope.launch {

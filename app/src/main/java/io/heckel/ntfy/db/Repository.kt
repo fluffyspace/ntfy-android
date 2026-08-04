@@ -395,7 +395,7 @@ class Repository(private val sharedPrefs: SharedPreferences, database: Database)
     }
 
     fun getFullScreenAlarmsEnabled(): Boolean {
-        return sharedPrefs.getBoolean(SHARED_PREFS_FULLSCREEN_ALARMS_ENABLED, true) // Enabled by default; publishers opt in per message
+        return sharedPrefs.getBoolean(SHARED_PREFS_FULLSCREEN_ALARMS_ENABLED, false) // Disabled by default, like "keep alerting for highest priority"
     }
 
     fun setFullScreenAlarmsEnabled(enabled: Boolean) {
